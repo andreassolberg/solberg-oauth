@@ -1,6 +1,6 @@
 # Solberg-OAuth
 
-A very basic OAuth 2.0 library written in PHP. Built-in storage using 
+A very basic OAuth 2.0 library written in PHP. Making direct use of MongoDB for storage.
 
 I wrote this library, to learn about OAuth. I might use it in some of my own projects. In the future I may decide to prepare this library for public consumption, including code, api clean up and documentation. Until then, feel free to use it on your own risk.
 
