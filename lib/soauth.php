@@ -1,12 +1,16 @@
 <?php
 
+/*
+ * This file is part of Solberg-OAuth
+ * Read more here: https://github.com/andreassolberg/solberg-oauth
+ */
+
+
 assert_options(ASSERT_ACTIVE, 1);
 assert_options(ASSERT_WARNING, 1);
 assert_options(ASSERT_QUIET_EVAL, 0);
 
 
-require_once('./soutils.php');
-require_once('./somessages.php');
 
 /**
  * Persistent Storage. Pluggable.
