@@ -1,28 +1,24 @@
 <?php
 
+/*
+ * This file is part of Solberg-OAuth
+ * Read more here: https://github.com/andreassolberg/solberg-oauth
+ */
 
-require_once('./soauthlib.php');
+
+// Load the OAuth library
+require_once('../../lib/soauth.php');
 
 try {
 	$client = new So_Client();
+	$client->getHTTP('test1', 'andreas', null, 'http://bridge.uninett.no/solberg-oauth/server/protected.php');
 	
-	
-	$client->run();
-	
-	
-
-	
-	// ->asQS());
 	
 } catch(Exception $e) {
+	
+	// For now, just dump the error on the user.
 	echo '<pre>';
 	print_r($e);
+	echo '</pre>';
 }
 
-
-/*
-
-db.providers.insert({"provider_id": "test1","client_credentials": {"client_id": "test","client_secret" : "secret123"},"authorization" : "http://bridge.uninett.no/mongo/server.php/authorization","token" : "http://bridge.uninett.no/mongo/server.php/token"});
-
-
-*/

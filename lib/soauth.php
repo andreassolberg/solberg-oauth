@@ -120,6 +120,17 @@ class So_StorageMongo extends So_Storage {
 		return So_AuthorizationCode::fromObj($result);
 	}
 	
+	public function putState($state, $obj) {
+		$obj['state'] = $state;
+		$this->db->states->insert($obj);
+	}
+	public function getState($state) {
+		$result = $this->extractOne('states', array('state' => $state));
+		if ($result === null) throw new So_Exception('invalid_grant', 'Invalid authorization code.');
+		$this->db->states->remove($result, array("safe" => true));
+		return $result;
+	}
+	
 
 
 
@@ -131,7 +142,7 @@ class So_StorageMongo extends So_Storage {
 class So_Client {
 	
 	protected $store;
-	
+
 	function __construct() {
 		$this->store = new So_StorageMongo();
 	}
@@ -148,7 +159,7 @@ class So_Client {
 	 * Get a one token, if cached.
 	 */
 	function getToken($provider_id, $user_id, $scope) {
-		$tokens = $this->getTokens($provider_id, $user_id);
+		$tokens = $this->store->getTokens($provider_id, $user_id);
 		if ($tokens === null) return null;
 		
 		foreach($tokens AS $token) {
@@ -163,7 +174,7 @@ class So_Client {
 		
 		$token = $this->getToken($provider_id, $user_id, $scope);
 		if ($token === null) {
-			$this->authreq();			
+			$this->authreq($providerconfig);			
 		}
 		
 		$opts = array('http' =>
@@ -178,32 +189,55 @@ class So_Client {
 	}
 	
 	function callback($provider_id, $userid) {
+		$providerconfig = $this->store->getProviderConfig($provider_id);
+		
 		if (!isset($_REQUEST['code'])) {
 			throw new Exception('Did not get [code] parameter in response as expeted');
 		}
 		
+		$authresponse = new So_AuthResponse($_REQUEST);
 		$tokenrequest = $authresponse->getTokenRequest(array(
-			'redirect_uri' => $this->clientconfig['redirect_uri'],
+			'redirect_uri' => $providerconfig['client_credentials']['redirect_uri'],
 		));
-		$tokenrequest->setClientCredentials($this->clientconfig['client_id'], $this->clientconfig['client_secret']);
-		$tokenresponse = new So_TokenResponse($tokenrequest->post($this->providerconfig['token']));
+		$tokenrequest->setClientCredentials($providerconfig['client_credentials']['client_id'], $providerconfig['client_credentials']['client_secret']);
+		
+		$tokenresponseraw = $tokenrequest->post($providerconfig['token']);
+//		echo '<pre>'; print_r($tokenresponseraw); 
+		
+		$tokenresponse = new So_TokenResponse($tokenresponseraw);
 		
 		// Todo check for error response.
 		
-		$accesstoken = So_AccessToken::fromObj($tokenresponse);
+		$accesstoken = So_AccessToken::fromObj($tokenresponseraw);
+//		echo '<pre>'; print_r($accesstoken); 
+		
 		$this->store->putAccessToken($provider_id, $userid, $accesstoken);
 		
+		if (!empty($authresponse->state)) {
+			$stateobj = $this->store->getState($authresponse->state);
+			if (!empty($stateobj['redirect_uri'])) {
+				echo '<pre>Ready to redirect...';
+				header('Location: ' . $stateobj['redirect_uri']);
+				exit;
+			}
+		}
+		throw new Exception('I got the token and everything, but I dont know what do do next... State lost.');
 	}
 
 	
-	function authreq() {
+	private function authreq($providerconfig) {
+		$state = So_Utils::gen_uuid();
+		$stateobj = array(
+			'redirect_uri' => $_SERVER['REQUEST_URI'],
+		);
+		$this->store->putState($state, $stateobj);
 		$request = new So_AuthRequest(array(
 			'response_type' => 'code',
-			'client_id' => $this->clientconfig['client_id'],
-			'state' => So_Utils::gen_uuid(),
-			'redirect_uri' => $this->clientconfig['redirect_uri'],
+			'client_id' => $providerconfig['client_credentials']['client_id'],
+			'state' => $state,
+			'redirect_uri' => $providerconfig['client_credentials']['redirect_uri'],
 		));
-		$request->sendRedirect($this->providerconfig['authorization']);
+		$request->sendRedirect($providerconfig['authorization']);
 	}
 	
 }
@@ -516,7 +550,7 @@ class So_AccessToken {
 	}
 	
 	static function fromObj($obj) {
-		$n = new So_AuthorizationCode();
+		$n = new So_AccessToken();
 		if (isset($obj['issued'])) $n->issued = $obj['issued'];
 		if (isset($obj['validuntil'])) $n->validuntil = $obj['validuntil'];
 		if (isset($obj['client_id'])) $n->client_id = $obj['client_id'];
@@ -708,6 +742,9 @@ class So_Response extends So_Message {
 class So_TokenResponse extends So_Response {
 	public $access_token, $token_type, $expires_in, $refresh_token, $scope;
 	function __construct($message) {
+		
+
+		
 		parent::__construct($message);
 		$this->access_token		= So_Utils::prequire($message, 'access_token');
 		$this->token_type		= So_Utils::prequire($message, 'token_type');
