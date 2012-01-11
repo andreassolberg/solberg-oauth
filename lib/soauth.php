@@ -10,7 +10,46 @@ assert_options(ASSERT_ACTIVE, 1);
 assert_options(ASSERT_WARNING, 1);
 assert_options(ASSERT_QUIET_EVAL, 0);
 
-
+/*
+ * Log to MongoDB 
+ */
+class So_log {
+	protected static $db;
+	protected static $logLevel = 4;
+	protected static $stacktrace = true;
+	
+	private static function init($logLevel = null, $stacktrace = null) {
+		if ($logLevel !== null) {
+			self::$logLevel = $logLevel;
+		}
+		if ($stacktrace !== null) {
+			self::$stacktrace = $stacktrace;
+		}
+		if (empty(self::$db)) {
+			$m = new Mongo();
+			self::$db = $m->oauth;
+		}
+	}
+	private static function log($level, $message, $obj = array()) {
+		if ($level > self::$logLevel) continue;
+		if (empty(self::$db)) self::init();
+		
+		$obj['_message'] = $message;
+		$obj['_level'] = $level;
+		$obj['_time'] = time();
+		if (self::$stacktrace) {
+			$debug = debug_backtrace();
+			$obj['_location'] = $debug[2]['function'] . ' (line ' . $debug[2]['line'] . ')';
+			// $obj['_stacktrace'] = $debug;	
+		}
+		
+		self::$db->log->insert($obj);
+	}
+	public static function debug($message, $obj = array()) { self::log(4, $message, $obj); }
+	public static function info($message, $obj = array()) { self::log(3, $message, $obj); }
+	public static function warn($message, $obj = array()) { self::log(2, $message, $obj); }
+	public static function error($message, $obj = array()) { self::log(1, $message, $obj); }
+}
 
 /**
  * Persistent Storage. Pluggable.
@@ -205,17 +244,18 @@ class So_Client {
 		return ($token !== null);
 	}
 	
-	function getHTTP($provider_id, $user_id, $scope = null, $url) {
-		$providerconfig = $this->store->getProviderConfig($provider_id);
-
-		echo '--gettoken----';
-		$token = $this->getToken($provider_id, $user_id, $scope);
+	function getHTTP($provider_id, $user_id, $url, array $requestScope = null, array $requireScope = null) {
 		
-				
+		So_log::debug('getHTTP', array('args' => func_get_args()));
+		
+		$providerconfig = $this->store->getProviderConfig($provider_id);
+		$token = $this->getToken($provider_id, $user_id, $requireScope);
+		
 		if ($token === null) {
-			$this->authreq($providerconfig, $scope);
+			$this->authreq($providerconfig, $requestScope);
 		}
 		
+		So_log::debug('Found a matching access token to use', array('token' => $token));
 		
 		error_log('Header: ' . $token->getAuthorizationHeader());
 		$opts = array('http' =>
@@ -227,12 +267,15 @@ class So_Client {
 		$context  = stream_context_create($opts);
 		
 
-		
-		$result = file_get_contents($url . '?access_token=' . $token->access_token , false, $context);
+		// $url .= '?access_token=' . $token->access_token ;
+		$result = file_get_contents($url, false, $context);
 		return $result;
 	}
 	
 	function callback($provider_id, $userid) {
+		
+		So_log::debug('Access callback page');
+		
 		$providerconfig = $this->store->getProviderConfig($provider_id);
 		
 		if (!isset($_REQUEST['code'])) {
@@ -240,6 +283,9 @@ class So_Client {
 		}
 		
 		$authresponse = new So_AuthResponse($_REQUEST);
+		
+		So_log::debug('Got an Authorization Response', array('params' => $_REQUEST));
+		
 		$tokenrequest = $authresponse->getTokenRequest(array(
 			'redirect_uri' => $providerconfig['client_credentials']['redirect_uri'],
 		));
@@ -272,7 +318,8 @@ class So_Client {
 
 	
 	private function authreq($providerconfig, $scope = null) {
-		echo '--authreq----';
+		So_log::debug('Initiating a new authorization request');
+		
 		$state = So_Utils::gen_uuid();
 		$stateobj = array(
 			'redirect_uri' => $_SERVER['REQUEST_URI'],
@@ -289,6 +336,7 @@ class So_Client {
 		
 		if (!empty($scope)) $requestdata['scope'] = $scope;
 		$request = new So_AuthRequest($requestdata);
+		So_log::debug('Redirecting to ', $providerconfig['authorization']);
 		$request->sendRedirect($providerconfig['authorization']);
 	}
 	
@@ -752,31 +800,31 @@ class So_Request extends So_Message {
 }
 
 abstract class So_AuthenticatedRequest extends So_Request {
-	public $u;
-	protected $p;
+	public $client_id;
+	protected $client_secret;
 	function __construct($message) {
 		parent::__construct($message);
 	}
 	function setClientCredentials($u, $p) {
 		error_log('setClientCredentials ('  . $u. ',' . $p. ')');
-		$this->u = $u;
-		$this->p = $p;
+		$this->client_id = $u;
+		$this->client_secret = $p;
 	}
 	function getAuthorizationHeader() {
-		if (empty($this->u) || empty($this->p)) throw new Exception('Cannot authenticate without username and passwd');
-		return 'Authorization: Basic ' . base64_encode($this->u . ':' . $this->p);
+		if (empty($this->client_id) || empty($this->client_secret)) throw new Exception('Cannot authenticate without username and passwd');
+		return 'Authorization: Basic ' . base64_encode($this->client_id . ':' . $this->client_secret);
 	}
 	function checkCredentials($u, $p) {
-		if ($u !== $this->u) throw new So_Exception('invalid_grant', 'Invalid client credentials');
+		if ($u !== $this->client_id) throw new So_Exception('invalid_grant', 'Invalid client credentials');
 	}
 	function parseServer($server) {
 		if (isset($_SERVER['PHP_AUTH_USER'])) {
-			$this->u = $_SERVER['PHP_AUTH_USER'];
+			$this->client_id = $_SERVER['PHP_AUTH_USER'];
 		}
 		if (isset($_SERVER['PHP_AUTH_PW'])) {
-			$this->p = $_SERVER['PHP_AUTH_PW'];
+			$this->client_secret = $_SERVER['PHP_AUTH_PW'];
 		}
-		error_log('Authenticated request with [' . $this->u . '] and [' . $this->p . ']');
+		error_log('Authenticated request with [' . $this->client_id . '] and [' . $this->client_secret . ']');
 	}
 	
 	protected function getContentType($hdrs) {
@@ -790,25 +838,47 @@ abstract class So_AuthenticatedRequest extends So_Request {
 		return 'application/json';
 	}
 	
+	protected function getStatusCode($hdrs) {
+		$explode = explode(' ', $hdrs[0]);
+		return $explode[1];
+	}
+	
 	public function post($endpoint) {
-		error_log('posting to endpoint: ' . $endpoint);
-		$postdata = $this->asQS();
-		$postdata .= '&client_id=' . urlencode($this->u) . '&client_secret=' . urlencode($this->p);
+		
+		$postdata = $this->asQS();		
+		So_log::debug('Posting typically a token request: ',
+		 	array(
+		 		'endpoint' => $endpoint,
+				'header' => $this->getAuthorizationHeader(),
+				'body' => $postdata,
+		 	));
 		
 		$opts = array('http' =>
 		    array(
 		        'method'  => 'POST',
 		        'header'  => "Content-type: application/x-www-form-urlencoded\r\n" . 
-					$this->getAuthorizationHeader() . "\r\n",
+					'',
+//					$this->getAuthorizationHeader() . "\r\n",
 		        'content' => $postdata
 		    )
 		);
-		$context  = stream_context_create($opts);
+		$context  = @stream_context_create($opts);
 
-		$result = file_get_contents($endpoint, false, $context);
-		$ct = $this->getContentType($http_response_header);
+		$result = @file_get_contents($endpoint, false, $context);
+		$statuscode = $this->getStatusCode($http_response_header);
 		
-		echo '<p>Response on token endpoint <pre>';   print_r($result);  echo '</pre>'; exit;
+		if ((string)$statuscode !== '200') {
+			
+			So_log::error('When sending a token request, using a provided code, the returned status code was not 200 OK.',
+				array(
+					'resultdata' => $result,
+					'headers' => $http_response_header
+				)
+			);
+			
+			throw new Exception('When sending a token request, using a provided code, the returned status code was not 200 OK.');
+		}
+		$ct = $this->getContentType($http_response_header);
 		
 		if ($ct === 'application/json') {
 
@@ -823,7 +893,7 @@ abstract class So_AuthenticatedRequest extends So_Request {
 			// cannot be reached, right now.
 			throw new Exception('Invalid content type in Token response.');
 		}
-		
+		So_log::debug('Successfully parsed the Token Response body',array('response' => $resultobj));
 		return $resultobj;
 	}
 	
@@ -925,6 +995,8 @@ class So_AuthResponse extends So_Message {
 // ---------- // ---------- // ---------- // ----------  Utils
 
 class So_Utils {
+	
+	
 	
 	
 	static function geturl() {

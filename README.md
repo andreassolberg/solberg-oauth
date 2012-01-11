@@ -57,7 +57,6 @@ Here is another example, adding Facebook to your provider list:
 
 	db.providers.insert({"provider_id": "facebook", "client_credentials": {"client_id": "xxx", "client_secret": "xxx", "redirect_uri" : "http://bridge.uninett.no/solberg-oauth/www/client/callback.php"}, "authorization": "https://www.facebook.com/dialog/oauth", "token": "https://graph.facebook.com/oauth/access_token"});
 	db.providers.insert({"provider_id": "google", "client_credentials": {"client_id": "xxx", "client_secret": "xxx", "redirect_uri" : "http://bridge.uninett.no/solberg-oauth/www/client/callback.php"}, "authorization": "https://accounts.google.com/o/oauth2/auth", "token": "https://accounts.google.com/o/oauth2/token"});
-
 	db.providers.insert({"provider_id": "coip", "client_credentials": {"client_id": "xxx", "client_secret": "xxx", "redirect_uri" : "http://bridge.uninett.no/solberg-oauth/www/client/callback.php"}, "authorization": "https://coip-test.sunet.se/oauth2/authorize/", "token": "https://coip-test.sunet.se/oauth2/token/"});
 
 
