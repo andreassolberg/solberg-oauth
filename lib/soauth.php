@@ -21,6 +21,9 @@ abstract class So_Storage {
 	public abstract function getClient($client_id);
 }
 
+/**
+ * A MongoDB implementation of the Storage API is 
+ */
 class So_StorageMongo extends So_Storage {
 	protected $db;
 	function __construct() {
@@ -89,11 +92,16 @@ class So_StorageMongo extends So_Storage {
 	}
 	
 	public function putAccessToken($provider_id, $userid, So_AccessToken $accesstoken) {
-		$this->db->tokens->insert(array(
-			'provider_id' => $provider_id,
-			'userid' => $userid,
-			'token' => $accesstoken->getObj()
-		));
+		$obj = $accesstoken->getObj();
+		$obj['provider_id'] = $provider_id;
+		$obj['userid'] = $userid;
+		$this->db->tokens->insert($obj);
+
+		// $this->db->tokens->insert(array(
+		// 	'provider_id' => $provider_id,
+		// 	'userid' => $userid,
+		// 	'token' => $accesstoken->getObj()
+		// ));
 	}
 	
 	/*
@@ -105,9 +113,20 @@ class So_StorageMongo extends So_Storage {
 		
 		$objs = array();
 		foreach($result AS $res) {
-			$objs[] = So_AccessToken::fromObj($res['token']);
+			$objs[] = So_AccessToken::fromObj($res);
 		}
 		return $objs;
+	}
+	
+	/*
+	 * Returns null or a specific access token.
+	 */
+	public function getToken($token) {
+		error_log('Storage › getToken(' . $token . ')');
+		$result = $this->extractOne('tokens', array('access_token' => $token));
+		if ($result === null) throw new Exception('Could not find the specified token.');
+		
+		return So_AccessToken::fromObj($result);
 	}
 		
 	public function putCode(So_AuthorizationCode $code) {
@@ -158,25 +177,47 @@ class So_Client {
 	/*
 	 * Get a one token, if cached.
 	 */
-	function getToken($provider_id, $user_id, $scope) {
+	function getToken($provider_id, $user_id, $scope = null) {
 		$tokens = $this->store->getTokens($provider_id, $user_id);
+		
+		// error_log('getToken() returns ' . var_export($tokens, true));
+		
 		if ($tokens === null) return null;
 		
 		foreach($tokens AS $token) {
-			if (!$token->isValid()) continue;
-			if (!$token->gotScopes($scope)) continue;
+			if (!$token->isValid()) {
+				error_log('Skipping invalid token: ' . var_export($token, true));
+				continue;
+			} 
+			if (!$token->gotScopes($scope)) {
+				error_log('Skipping token because of scope: ' . var_export($token, true));
+				continue;
+			}
+			return $token;
 		}
 		return null;
 	}
 	
-	function getHTTP($provider_id, $user_id, $scope, $url) {
+	
+	function checkForToken($provider_id, $user_id, $scope = null) {
 		$providerconfig = $this->store->getProviderConfig($provider_id);
-		
 		$token = $this->getToken($provider_id, $user_id, $scope);
+		return ($token !== null);
+	}
+	
+	function getHTTP($provider_id, $user_id, $scope = null, $url) {
+		$providerconfig = $this->store->getProviderConfig($provider_id);
+
+		echo '--gettoken----';
+		$token = $this->getToken($provider_id, $user_id, $scope);
+		
+				
 		if ($token === null) {
-			$this->authreq($providerconfig);			
+			$this->authreq($providerconfig, $scope);
 		}
 		
+		
+		error_log('Header: ' . $token->getAuthorizationHeader());
 		$opts = array('http' =>
 		    array(
 		        'method'  => 'GET',
@@ -184,8 +225,11 @@ class So_Client {
 		    )
 		);
 		$context  = stream_context_create($opts);
+		
 
-		$result = file_get_contents($endpoint, false, $context);
+		
+		$result = file_get_contents($url . '?access_token=' . $token->access_token , false, $context);
+		return $result;
 	}
 	
 	function callback($provider_id, $userid) {
@@ -203,11 +247,13 @@ class So_Client {
 		
 		$tokenresponseraw = $tokenrequest->post($providerconfig['token']);
 //		echo '<pre>'; print_r($tokenresponseraw); 
+
+		echo '<pre>Token response:'; print_r($tokenresponseraw); echo '</pre>';
 		
 		$tokenresponse = new So_TokenResponse($tokenresponseraw);
 		
 		// Todo check for error response.
-		
+
 		$accesstoken = So_AccessToken::fromObj($tokenresponseraw);
 //		echo '<pre>'; print_r($accesstoken); 
 		
@@ -225,18 +271,24 @@ class So_Client {
 	}
 
 	
-	private function authreq($providerconfig) {
+	private function authreq($providerconfig, $scope = null) {
+		echo '--authreq----';
 		$state = So_Utils::gen_uuid();
 		$stateobj = array(
 			'redirect_uri' => $_SERVER['REQUEST_URI'],
 		);
 		$this->store->putState($state, $stateobj);
-		$request = new So_AuthRequest(array(
+
+		$requestdata = array(
 			'response_type' => 'code',
 			'client_id' => $providerconfig['client_credentials']['client_id'],
 			'state' => $state,
 			'redirect_uri' => $providerconfig['client_credentials']['redirect_uri'],
-		));
+		);
+
+		
+		if (!empty($scope)) $requestdata['scope'] = $scope;
+		$request = new So_AuthRequest($requestdata);
 		$request->sendRedirect($providerconfig['authorization']);
 	}
 	
@@ -279,6 +331,41 @@ class So_Server {
 		</body>
 		</html>
 		';
+	}
+	
+	
+	private function getAuthorizationHeader() {
+		$hdrs = getallheaders();
+		foreach($hdrs AS $h => $v) {
+			if ($h === 'Authorization') {
+				if (preg_match('/^Bearer\s(.*?)$/i', $v, $matches)) {
+					return trim($matches[1]);
+				}
+			}
+		}
+		return null;
+	}
+	
+	
+	private function getProvidedToken() {
+		$authorizationHeader = $this->getAuthorizationHeader();
+		if ($authorizationHeader !== null) return $authorizationHeader;
+		
+		if (!empty($_REQUEST['access_token'])) return $_REQUEST['access_token'];
+		
+		throw new Exception('Could not get provided Access Token');
+	}
+	
+	
+	/*
+	 * Check a token provided by a user, through the authorization header.
+	 */
+	function checkToken($scope = null) {
+		
+		$tokenstr = $this->getProvidedToken();
+		$token = $this->store->getToken($tokenstr);
+		$token->requireValid($scope);
+		return $token;
 	}
 	
 	
@@ -516,7 +603,7 @@ class So_AccessToken {
 	}
 	
 	function getAuthorizationHeader() {
-		return 'Authorization OAuth ' . $this->access_token;
+		return 'Authorization: Bearer ' . $this->access_token . "\r\n";
 	}
 	
 	function gotScopes($gotscopes) {
@@ -537,6 +624,11 @@ class So_AccessToken {
 		if ($this->validuntil === null) return true;
 		if ($this->validuntil > (time() + 2)) return true; // If a token is valid in less than two seconds, treat it as expired.
 		return false;
+	}
+	
+	function requireValid($scope) {
+		if (!$this->isValid()) throw new Exception('Token expired');
+		if (!$this->gotScopes($scope)) throw new Exception('Token did not include the required scopes.');
 	}
 	
 	function getObj() {
@@ -627,6 +719,8 @@ class So_Message {
 		exit;
 	}
 	
+
+	
 	public function post($endpoint) {
 		error_log('posting to endpoint: ' . $endpoint);
 		$postdata = $this->asQS();
@@ -636,14 +730,17 @@ class So_Message {
 		$opts = array('http' =>
 		    array(
 		        'method'  => 'POST',
-		        'header'  => 'Content-type: application/x-www-form-urlencoded',
+		        'header'  => 'Content-type: application/x-www-form-urlencoded' . "\r\n",
 		        'content' => $postdata
 		    )
 		);
 		$context  = stream_context_create($opts);
 
 		$result = file_get_contents($endpoint, false, $context);
+		
 		$resultobj = json_decode($result, true);
+		
+
 		return $resultobj;
 	}
 }
@@ -682,9 +779,21 @@ abstract class So_AuthenticatedRequest extends So_Request {
 		error_log('Authenticated request with [' . $this->u . '] and [' . $this->p . ']');
 	}
 	
+	protected function getContentType($hdrs) {
+		foreach ($hdrs AS $h) {
+			if (preg_match('|^Content-[Tt]ype:\s*text/plain|i', $h, $matches)) {
+				return 'application/x-www-form-urlencoded';
+			} else if (preg_match('|^Content-[Tt]ype:\s*application/x-www-form-urlencoded|i', $h, $matches)) {
+				return 'application/x-www-form-urlencoded';
+			}
+		}
+		return 'application/json';
+	}
+	
 	public function post($endpoint) {
 		error_log('posting to endpoint: ' . $endpoint);
 		$postdata = $this->asQS();
+		$postdata .= '&client_id=' . urlencode($this->u) . '&client_secret=' . urlencode($this->p);
 		
 		$opts = array('http' =>
 		    array(
@@ -696,13 +805,28 @@ abstract class So_AuthenticatedRequest extends So_Request {
 		);
 		$context  = stream_context_create($opts);
 
-		error_log('header: ' . "Content-type: application/x-www-form-urlencoded\r\n" . 
-			$this->getAuthorizationHeader());
-
 		$result = file_get_contents($endpoint, false, $context);
-		$resultobj = json_decode($result, true);
+		$ct = $this->getContentType($http_response_header);
+		
+		echo '<p>Response on token endpoint <pre>';   print_r($result);  echo '</pre>'; exit;
+		
+		if ($ct === 'application/json') {
+
+			$resultobj = json_decode($result, true);
+			
+		} else if ($ct === 'application/x-www-form-urlencoded') {
+			
+			$resultobj = array();
+			parse_str(trim($result), $resultobj);
+			
+		} else {
+			// cannot be reached, right now.
+			throw new Exception('Invalid content type in Token response.');
+		}
+		
 		return $resultobj;
 	}
+	
 }
 
 class So_AuthRequest extends So_Request {
@@ -714,6 +838,19 @@ class So_AuthRequest extends So_Request {
 		$this->redirect_uri		= So_Utils::optional($message, 'redirect_uri');
 		$this->scope			= So_Utils::optional($message, 'scope');
 		$this->state			= So_Utils::optional($message, 'state');
+	}
+	
+	function asQS() {
+		$qs = array();
+		foreach($this AS $key => $value) {
+			if (empty($value)) continue;
+			if ($key === 'scope') {
+				$qs[] = urlencode($key) . '=' . urlencode(join(' ', $value));
+				continue;
+			} 
+			$qs[] = urlencode($key) . '=' . urlencode($value);
+		}
+		return join('&', $qs);
 	}
 	
 	function getResponse($message) {
@@ -743,7 +880,8 @@ class So_TokenResponse extends So_Response {
 	public $access_token, $token_type, $expires_in, $refresh_token, $scope;
 	function __construct($message) {
 		
-
+		// Hack to add support for Facebook. Token type is missing.
+		if (empty($message['token_type'])) $message['token_type'] = 'bearer';
 		
 		parent::__construct($message);
 		$this->access_token		= So_Utils::prequire($message, 'access_token');

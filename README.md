@@ -52,10 +52,26 @@ Example object:
 		"token" : "http://bridge.uninett.no/mongo/server.php/token"
 	}
 
+
+Here is another example, adding Facebook to your provider list:
+
+	db.providers.insert({"provider_id": "facebook", "client_credentials": {"client_id": "xxx", "client_secret": "xxx", "redirect_uri" : "http://bridge.uninett.no/solberg-oauth/www/client/callback.php"}, "authorization": "https://www.facebook.com/dialog/oauth", "token": "https://graph.facebook.com/oauth/access_token"});
+	db.providers.insert({"provider_id": "google", "client_credentials": {"client_id": "947231518672.apps.googleusercontent.com", "client_secret": "ETlRJHebtiiBxJNN3GntvWI3", "redirect_uri" : "http://bridge.uninett.no/solberg-oauth/www/client/callback.php"}, "authorization": "https://accounts.google.com/o/oauth2/auth", "token": "https://accounts.google.com/o/oauth2/token"});
+
+	db.providers.insert({"provider_id": "coip", "client_credentials": {"client_id": "ebd31a0cf227ef0a9b3d@coip-test.sunet.se", "client_secret": "hWkosbqLnSGAU3pZnTPihkj2rTeatOlgGgzuoBWM", "redirect_uri" : "http://bridge.uninett.no/solberg-oauth/www/client/callback.php"}, "authorization": "https://coip-test.sunet.se/oauth2/authorize/", "token": "https://coip-test.sunet.se/oauth2/token/"});
+
+
+
+
+
 ### Other storage collections
 
 * **codes** includes authorization codes temporarily. Used by the OAuth Provider.
 * **tokens** includes permanent cache of Access Tokens. Used by the OAuth Consumer.
+
+To reset all templrary storage:
+
+	db.authorization.drop(); db.codes.drop(); db.states.drop(); db.tokens.drop();
 
 
 

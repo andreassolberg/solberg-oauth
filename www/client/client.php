@@ -11,7 +11,21 @@ require_once('../../lib/soauth.php');
 
 try {
 	$client = new So_Client();
-	$client->getHTTP('test1', 'andreas', null, 'http://bridge.uninett.no/solberg-oauth/server/protected.php');
+	
+	$token = $client->getToken('test1', 'andreas');
+	
+	// echo '<pre>Token from (test1, andreas):';
+	// print_r($token);
+	// echo '</pre>';
+	// exit;
+	
+	
+	
+	$data = $client->getHTTP('test1', 'andreas', null, 'http://bridge.uninett.no/solberg-oauth/www/server/protected.php');
+	
+	echo '<p>Got data: <pre>';
+	print_r(json_decode($data, true));
+	echo '</pre>';
 	
 	
 } catch(Exception $e) {
