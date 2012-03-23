@@ -5,7 +5,6 @@
  * Read more here: https://github.com/andreassolberg/solberg-oauth
  */
 
-
 assert_options(ASSERT_ACTIVE, 1);
 assert_options(ASSERT_WARNING, 1);
 assert_options(ASSERT_QUIET_EVAL, 0);
@@ -15,6 +14,9 @@ assert_options(ASSERT_QUIET_EVAL, 0);
  */
 class So_log {
 	protected static $db;
+	
+	// Logged error messages beyond this level, will not 
+	// be logged
 	protected static $logLevel = 4;
 	protected static $stacktrace = true;
 	
@@ -36,11 +38,11 @@ class So_log {
 		
 		$obj['_message'] = $message;
 		$obj['_level'] = $level;
-		$obj['_time'] = time();
+		$obj['_time'] = floor(microtime(true)*1000);
 		if (self::$stacktrace) {
 			$debug = debug_backtrace();
 			$obj['_location'] = $debug[2]['function'] . ' (line ' . $debug[2]['line'] . ')';
-			// $obj['_stacktrace'] = $debug;	
+			// $obj['_stacktrace'] = $debug; Generates a lot of data...	
 		}
 		
 		self::$db->log->insert($obj);
@@ -129,10 +131,12 @@ class So_StorageMongo extends So_Storage {
 			$this->db->authorization->insert($auth->getObj());
 		}
 	}
+
+
 	
-	public function putAccessToken($provider_id, $userid, So_AccessToken $accesstoken) {
+	public function putAccessToken($id, $userid, So_AccessToken $accesstoken) {
 		$obj = $accesstoken->getObj();
-		$obj['provider_id'] = $provider_id;
+		$obj['id'] = $id;
 		$obj['userid'] = $userid;
 		$this->db->tokens->insert($obj);
 
@@ -146,8 +150,8 @@ class So_StorageMongo extends So_Storage {
 	/*
 	 * Returns null or an array of So_AccessToken objects.
 	 */
-	public function getTokens($provider_id, $userid) {
-		$result = $this->extractList('tokens', array('provider_id' => $provider_id, 'userid' => $userid));
+	public function getTokens($id, $userid) {
+		$result = $this->extractList('tokens', array('id' => $id, 'userid' => $userid));
 		if ($result === null) return null;
 		
 		$objs = array();
@@ -268,6 +272,8 @@ class So_Client {
 		
 
 		// $url .= '?access_token=' . $token->access_token ;
+		error_log("Getting data from url: " . $url);
+		error_log("   Using header:  " . $token->getAuthorizationHeader());
 		$result = file_get_contents($url, false, $context);
 		return $result;
 	}
@@ -464,31 +470,42 @@ class So_Server {
 			$this->store->setAuthorization($authorization);
 		}
 		if (!$authorization->includeScopes($request->scope)) {
-			error_log('Authz: Missing scopes from what is requied. OBtain additional scopes');
+			error_log('Authz: Missing scopes from what is requied. Obtain additional scopes');
 			// Missing scopes from what is requied. OBtain additional scopes...
 			$authorization->scope = $request->scope;
 			$this->store->setAuthorization($authorization);			
 		}
 
-		$authcode = So_AuthorizationCode::generate($request->client_id, $userid);
-		$this->store->putCode($authcode);
-		
-		$response = $request->getResponse(array('code' => $authcode->code));
-		$response->sendRedirect($url);
-		
-		
-		// echo '<h1>Request</h1><pre>';
-		// print_r($request);
-		// echo '</pre>';
-		// 
-		// echo '<h1>Client</h1><pre>';
-		// print_r($clientconfig);
-		// echo '</pre>';
-		// 
-		// echo '<h1>URL</h1><pre>';
-		// print_r($url);
-		// echo '</pre>';
-		
+
+		// Handle the various response types. code or token
+		if ($request->response_type === 'token') {
+
+
+			$accesstoken = So_AccessToken::generate($clientconfig['client_id'], $userid, null, false);
+			$this->store->putAccessToken($request->client_id, $userid, $accesstoken);
+			error_log('Ive generated a token: ' . var_export($accesstoken->getToken(), true));
+			$tokenresponse = new So_TokenResponse($accesstoken->getToken());
+			if ($request->state) {
+				$tokenresponse->state = $request->state;
+			}
+			
+			$tokenresponse->sendRedirect($url, true);
+			return;
+
+
+		} else if ($request->response_type === 'code') {
+
+			$authcode = So_AuthorizationCode::generate($request->client_id, $userid);
+			$this->store->putCode($authcode);
+			
+			$response = $request->getResponse(array('code' => $authcode->code));
+			$response->sendRedirect($url);
+			return;
+
+		} else {
+			throw new Exception('Unsupported response_type in request. Only supported code and token.');
+		}
+
 	}
 	
 	private function token() {
@@ -504,6 +521,7 @@ class So_Server {
 			$tokenrequest->checkCredentials($clientconfig['client_id'], $clientconfig['client_secret']);
 			$code = $this->store->getCode($clientconfig['client_id'], $tokenrequest->code);
 			$accesstoken = So_AccessToken::generate($clientconfig['client_id'], $code->userid);
+			$this->store->putAccessToken($clientconfig['client_id'], $code->userid, $accesstoken);
 			error_log('Ive generated a token: ' . var_export($accesstoken->getToken(), true));
 			$tokenresponse = new So_TokenResponse($accesstoken->getToken());
 			
@@ -631,14 +649,17 @@ class So_AccessToken {
 	
 	function __construct() {
 	}
-	static function generate($client_id, $userid, $scope = null) {
+	static function generate($client_id, $userid, $scope = null, $refreshtoken = true) {
 		$n = new So_AccessToken();
 		$n->userid = $userid;
 		$n->client_id = $client_id;
 		$n->issued = time();
 		$n->validuntil = time() + 600;
 		$n->access_token = So_Utils::gen_uuid();
-		$n->refresh_token = So_Utils::gen_uuid();
+		if ($refreshtoken) {
+			$n->refresh_token = So_Utils::gen_uuid();			
+		}
+
 		$n->token_type = 'bearer';
 		
 		if ($scope) {
@@ -756,8 +777,13 @@ class So_Message {
 		return join('&', $qs);
 	}
 	
-	public function sendRedirect($endpoint) {
-		$redirurl = $endpoint . '?' . $this->asQS();
+	public function sendRedirect($endpoint, $hash = false) {
+		if ($hash) {
+			$redirurl = $endpoint . '#' . $this->asQS();
+		} else {
+			$redirurl = $endpoint . '?' . $this->asQS();
+		}
+		
 		header('Location: ' . $redirurl);
 		exit;
 	}
@@ -857,8 +883,8 @@ abstract class So_AuthenticatedRequest extends So_Request {
 		    array(
 		        'method'  => 'POST',
 		        'header'  => "Content-type: application/x-www-form-urlencoded\r\n" . 
-					'',
-//					$this->getAuthorizationHeader() . "\r\n",
+				'',
+//				$this->getAuthorizationHeader() . "\r\n",
 		        'content' => $postdata
 		    )
 		);
@@ -947,7 +973,7 @@ class So_Response extends So_Message {
 }
 
 class So_TokenResponse extends So_Response {
-	public $access_token, $token_type, $expires_in, $refresh_token, $scope;
+	public $access_token, $token_type, $expires_in, $refresh_token, $scope, $state;
 	function __construct($message) {
 		
 		// Hack to add support for Facebook. Token type is missing.
@@ -959,6 +985,7 @@ class So_TokenResponse extends So_Response {
 		$this->expires_in		= So_Utils::optional($message, 'expires_in');
 		$this->refresh_token	= So_Utils::optional($message, 'refresh_token');
 		$this->scope			= So_Utils::optional($message, 'scope');
+		$this->state			= So_Utils::optional($message, 'state');
 	}
 }
 

@@ -12,7 +12,7 @@ require_once('../../lib/soauth.php');
 
 // Loading SimpleSAMLphp for doing authentication at the OAuth provider.
 // Read more about SimpleSAMLphp here: http://simplesamlphp.org/
-require_once('../../../../../simplesamlphp-idp/lib/_autoload.php');
+require_once('../../../../simplesamlphp-idp/lib/_autoload.php');
 
 
 

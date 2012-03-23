@@ -35,6 +35,11 @@ Example object:
 	}
 
 
+	db.clients.insert({"client_id": "andreas", "redirect_uri": "http://localhost/~andreas/jso/demo/"});
+
+
+
+
 ### Providers (used by the OAuth Consumer)
 
 
@@ -62,7 +67,6 @@ Here is another example, adding Facebook to your provider list:
 
 
 
-
 ### Other storage collections
 
 * **codes** includes authorization codes temporarily. Used by the OAuth Provider.
@@ -79,3 +83,6 @@ To reset all templrary storage:
 Source and download available here:
 
 	https://github.com/andreassolberg/solberg-oauth
+
+
+
