@@ -6,20 +6,21 @@
  */
 
 
+// Loading SimpleSAMLphp for doing authentication at the OAuth provider.
+// Read more about SimpleSAMLphp here: http://simplesamlphp.org/
+require_once('/var/simplesamlphp-foodle/lib/_autoload.php');
+
 
 // Load the OAuth library
 require_once('../../lib/soauth.php');
+require_once('../../lib/sostoragemysql.php');
 
-// Loading SimpleSAMLphp for doing authentication at the OAuth provider.
-// Read more about SimpleSAMLphp here: http://simplesamlphp.org/
-require_once('../../../../../simplesamlphp-idp/lib/_autoload.php');
 
 
 
 try {
 	
-	$as = new SimpleSAML_Auth_Simple('example-userpass');
-
+	$as = new SimpleSAML_Auth_Simple('saml');
 	
 	$server = new So_Server();
 	$server->runInfo();
