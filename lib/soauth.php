@@ -347,7 +347,8 @@ class So_Server {
 	protected $store;
 	
 	function __construct() {
-		$this->store = new So_StorageMongo();
+		// $this->store = new So_StorageMongo();
+		$this->store = new So_StorageMysql();
 	}
 	
 	private function info() {
