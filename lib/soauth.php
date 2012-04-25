@@ -9,6 +9,36 @@ assert_options(ASSERT_ACTIVE, 1);
 assert_options(ASSERT_WARNING, 1);
 assert_options(ASSERT_QUIET_EVAL, 0);
 
+
+function http_parse_headers( $header, $hdrs ) {
+	$key = null;
+	$value = null;
+
+	$fields = explode("\r\n", preg_replace('/\x0D\x0A[\x09\x20]+/', ' ', $header));
+	foreach( $fields as $field ) {
+	    if( preg_match('/([^:]+): (.+)/m', $field, $match) ) {
+	        $key = strtolower(preg_replace('/(?<=^|[\x09\x20\x2D])./e', 'strtoupper("\0")', strtolower(trim($match[1]))));
+	        $value = trim($match[2]);
+
+	        if (isset($key)) {
+	        	if (!isset($hdrs[$key])) {
+	        		$hdrs[$key] = array();
+	        	}
+	        	$hdrs[$key][] = $value;
+	        }
+
+	    }
+	}
+
+}
+
+
+class So_ExpiredToken extends Exception {}
+class So_AuthorizationRequied extends Exception {
+	public $scopes;
+}
+
+
 /*
  * Log to MongoDB 
  */
@@ -28,11 +58,12 @@ class So_log {
 			self::$stacktrace = $stacktrace;
 		}
 		if (empty(self::$db)) {
-			$m = new Mongo();
-			self::$db = $m->oauth;
+			// $m = new Mongo();
+			// self::$db = $m->oauth;
 		}
 	}
 	private static function log($level, $message, $obj = array()) {
+		return;
 		if ($level > self::$logLevel) continue;
 		if (empty(self::$db)) self::init();
 		
@@ -192,21 +223,30 @@ class So_StorageMongo extends So_Storage {
 		$this->db->states->remove($result, array("safe" => true));
 		return $result;
 	}
-	
-
-
 
 }
 
 
-
+class So_RedirectException extends Exception {
+	protected $url;
+	function __construct($url) {
+		$this->url = $url;
+	}
+	function getURL() {
+		return $this->url;
+	}
+}
 
 class So_Client {
 	
 	protected $store;
 
-	function __construct() {
-		$this->store = new So_StorageMongo();
+	function __construct($store = null) {
+		if ($store === null) {
+			$this->store = new So_StorageMongo();
+		} else {
+			$this->store = $store;
+		}
 	}
 	
 	// function __construct($clientconfig, $providerconfig) {
@@ -240,6 +280,10 @@ class So_Client {
 		}
 		return null;
 	}
+
+	function wipeToken($provider_id, $token) {
+		$this->store->wipeToken($provider_id, $token);
+	}
 	
 	
 	function checkForToken($provider_id, $user_id, $scope = null) {
@@ -248,7 +292,7 @@ class So_Client {
 		return ($token !== null);
 	}
 	
-	function getHTTP($provider_id, $user_id, $url, array $requestScope = null, array $requireScope = null) {
+	function getHTTP($provider_id, $user_id, $url, array $requestScope = null, array $requireScope = null, $allowRedirect = true, $returnTo = null) {
 		
 		So_log::debug('getHTTP', array('args' => func_get_args()));
 		
@@ -256,39 +300,107 @@ class So_Client {
 		$token = $this->getToken($provider_id, $user_id, $requireScope);
 		
 		if ($token === null) {
-			$this->authreq($providerconfig, $requestScope);
+			// Redirects if applicable...
+			$redirectURL = $this->authreq($providerconfig, $requestScope, $allowRedirect, $provider_id, $returnTo);
+			throw new So_RedirectException($redirectURL);
 		}
 		
 		So_log::debug('Found a matching access token to use', array('token' => $token));
 		
 		error_log('Header: ' . $token->getAuthorizationHeader());
-		$opts = array('http' =>
-		    array(
-		        'method'  => 'GET',
-		        'header'  => $token->getAuthorizationHeader()
-		    )
-		);
+		$httpopts = array(
+	        'method'  => 'GET',
+	        'header'  => $token->getAuthorizationHeader()
+	    );
+		$opts = array('http' => $httpopts);
 		$context  = stream_context_create($opts);
 		
+
+		if (isset($providerconfig["tokentransport"])) {
+			if ($providerconfig["tokentransport"] === "query") {
+				$url = SimpleSAML_Utilities::addURLparameter($url, array("access_token" => $token->getValue()));
+			}
+		}
 
 		// $url .= '?access_token=' . $token->access_token ;
 		error_log("Getting data from url: " . $url);
 		error_log("   Using header:  " . $token->getAuthorizationHeader());
-		$result = file_get_contents($url, false, $context);
+		$result = @file_get_contents($url, false, $context);
+
+		// echo '<pre>';
+
+		if ($result === false) {
+			list($version, $status_code, $msg) = explode(' ', $http_response_header[0], 3);
+			$headers = array();
+
+			foreach($http_response_header AS $hdr) {
+				http_parse_headers($hdr, &$headers);
+			}
+			if ($status_code === '400') {
+				if (isset($headers["www-authenticate"])) {
+					if (strpos($headers["www-authenticate"][0],
+						'OAuth "Facebook Platform" "invalid_token"'
+						) !== false) {
+
+						$this->wipeToken($provider_id, $token);
+
+						// Facebook 
+						throw new So_ExpiredToken("Access Token seems to be expired [facebook].");
+					}
+				}
+			} else if ($status_code === 401) {
+				if (isset($headers["www-authenticate"])) {
+					if (strpos($headers["www-authenticate"][0],
+						'"invalid_token"'
+						) !== false) {
+
+						$this->wipeToken($token);
+
+						// Not facebook. Standard compliant. 
+						throw new So_ExpiredToken("Access Token seems to be expired.");
+					}
+				}
+			}
+			// print_r($http_response_header); 
+			// print_r($headers); 
+			// echo "status_code: " . $status_code;
+			// exit;
+
+			throw new Exception('Error (not 200 OK) when accessing data endpoint.');
+		}
+
+
+		error_log("Getting data : " . $result);
+
 		return $result;
 	}
 	
-	function callback($provider_id, $userid) {
+	function callback($userid) {
 		
 		So_log::debug('Access callback page');
 		
-		$providerconfig = $this->store->getProviderConfig($provider_id);
 		
 		if (!isset($_REQUEST['code'])) {
 			throw new Exception('Did not get [code] parameter in response as expeted');
 		}
 		
 		$authresponse = new So_AuthResponse($_REQUEST);
+
+
+
+
+		$stateobj = $this->store->getState($authresponse->state);
+		
+
+		$provider_id = $stateobj["provider_id"];
+
+		if (empty($provider_id)) throw new Exception("could not find provider_id in state array. Internal error. should not happen.");
+
+		$providerconfig = $this->store->getProviderConfig($provider_id);
+
+		//echo '<pre>'; print_r($stateobj); exit;
+		
+
 		
 		So_log::debug('Got an Authorization Response', array('params' => $_REQUEST));
 		
@@ -299,8 +411,8 @@ class So_Client {
 		
 		$tokenresponseraw = $tokenrequest->post($providerconfig['token']);
 //		echo '<pre>'; print_r($tokenresponseraw); 
+		
 
-		echo '<pre>Token response:'; print_r($tokenresponseraw); echo '</pre>';
 		
 		$tokenresponse = new So_TokenResponse($tokenresponseraw);
 		
@@ -311,24 +423,24 @@ class So_Client {
 		
 		$this->store->putAccessToken($provider_id, $userid, $accesstoken);
 		
-		if (!empty($authresponse->state)) {
-			$stateobj = $this->store->getState($authresponse->state);
-			if (!empty($stateobj['redirect_uri'])) {
-				echo '<pre>Ready to redirect...';
-				header('Location: ' . $stateobj['redirect_uri']);
-				exit;
-			}
+		if (!empty($stateobj['redirect_uri'])) {
+			// echo '<pre>Ready to redirect back to ' . $stateobj['redirect_uri']; exit;
+			header('Location: ' . $stateobj['redirect_uri']);
+			exit;
 		}
 		throw new Exception('I got the token and everything, but I dont know what do do next... State lost.');
 	}
 
 	
-	private function authreq($providerconfig, $scope = null) {
+	private function authreq($providerconfig, $scope = null, $allowRedirect = true, $providerID, $returnTo = null) {
 		So_log::debug('Initiating a new authorization request');
 		
+		if ($returnTo === null) $returnTo = SimpleSAML_Utilities::selfURL();
+
 		$state = So_Utils::gen_uuid();
 		$stateobj = array(
-			'redirect_uri' => $_SERVER['REQUEST_URI'],
+			'redirect_uri' => $returnTo,
+			'provider_id' => $providerID
 		);
 		$this->store->putState($state, $stateobj);
 
@@ -343,7 +455,13 @@ class So_Client {
 		if (!empty($scope)) $requestdata['scope'] = $scope;
 		$request = new So_AuthRequest($requestdata);
 		So_log::debug('Redirecting to ', $providerconfig['authorization']);
-		$request->sendRedirect($providerconfig['authorization']);
+		
+		if ($allowRedirect) {
+			$request->sendRedirect($providerconfig['authorization']);
+		} else {
+			return $request->getRedirectURL($providerconfig['authorization']);
+		}
+
 	}
 	
 }
@@ -352,10 +470,14 @@ class So_Server {
 	
 	protected $store;
 	
-	function __construct() {
-		// $this->store = new So_StorageMongo();
-		$this->store = new So_StorageMysql();
+	function __construct($store = null) {
+		if ($store === null) {
+			$this->store = new So_StorageMongo();
+		} else {
+			$this->store = $store;
+		}
 	}
+
 	
 	private function info() {
 		
@@ -455,6 +577,18 @@ class So_Server {
 	}
 	
 
+	public function setAuthorization($client_id, $userid, $scopes) {
+
+		error_log('setAuthorization($client_id, $userid, $scopes) ' . "($client_id, $userid, $scopes)");
+
+		$authorization = $this->store->getAuthorization($client_id, $userid);
+		if ($authorization === null) {
+			$authorization = new So_Authorization($userid, $client_id, $scopes);	
+		}
+		$authorization->scope = $scopes;
+		$this->store->setAuthorization($authorization);
+	}
+
 	private function authorization($userid) {
 		
 		$request = new So_AuthRequest($_REQUEST);
@@ -462,20 +596,37 @@ class So_Server {
 		$url = $this->validateRedirectURI($request, $clientconfig);
 		
 		$authorization = $this->store->getAuthorization($request->client_id, $userid);
-		if ($authorization === null) {
-			error_log('Authz: Need to obtain authorization from the user');
-			// Need to obtain authorization from the user.
-			// For now we do this automatically. Typically, we would like to display and request 
-			// confirmation from the user.
-			$authorization = new So_Authorization($userid, $request->client_id, $request->scope);
-			$this->store->setAuthorization($authorization);
+
+
+		// if ($authorization === null) {
+		// 	error_log('Authz: Need to obtain authorization from the user');
+		// 	// Need to obtain authorization from the user.
+		// 	// For now we do this automatically. Typically, we would like to display and request 
+		// 	// confirmation from the user.
+		// 	$authorization = new So_Authorization($userid, $request->client_id, $request->scope);
+		// 	$this->store->setAuthorization($authorization);
+		// }
+		// if (!$authorization->includeScopes($request->scope)) {
+		// 	error_log('Authz: Missing scopes from what is required. Obtain additional scopes');
+		// 	// Missing scopes from what is requied. OBtain additional scopes...
+		// 	$authorization->scope = $request->scope;
+		// 	$this->store->setAuthorization($authorization);			
+		// }
+
+
+		if ($authorization === null || !$authorization->includeScopes($request->scope)) {
+
+			if ($authorization === null) {
+				error_log("Authorization object not found,");
+			} else if  (!$authorization->includeScopes($request->scope)) {
+				error_log("scope not satisfied.,");
+			}
+
+			$e = new So_AuthorizationRequied();
+			$e->scopes = $request->scope;
+			throw $e;
 		}
-		if (!$authorization->includeScopes($request->scope)) {
-			error_log('Authz: Missing scopes from what is requied. Obtain additional scopes');
-			// Missing scopes from what is requied. OBtain additional scopes...
-			$authorization->scope = $request->scope;
-			$this->store->setAuthorization($authorization);			
-		}
+
 
 
 		// Handle the various response types. code or token
@@ -514,11 +665,12 @@ class So_Server {
 		$tokenrequest->parseServer($_SERVER);
 
 		error_log('Access token endpoint: ' . var_export($_REQUEST, true));
+		error_log("Token request: " . var_export($tokenrequest, true));
 		
 		
 		if ($tokenrequest->grant_type === 'authorization_code') {
 			
-			$clientconfig = $this->store->getClient($tokenrequest->u);
+			$clientconfig = $this->store->getClient($tokenrequest->client_id);
 			$tokenrequest->checkCredentials($clientconfig['client_id'], $clientconfig['client_secret']);
 			$code = $this->store->getCode($clientconfig['client_id'], $tokenrequest->code);
 			$accesstoken = So_AccessToken::generate($clientconfig['client_id'], $code->userid);
@@ -601,6 +753,7 @@ class So_Authorization {
 	}
 	function includeScopes($requiredscopes) {
 		if ($requiredscopes === null) return true;
+		// echo '<pre>'; print_r($requiredscopes); exit;
 		assert('is_array($requiredscopes)');
 		foreach($requiredscopes AS $rs) {
 			if (!in_array($rs, $this->scope)) return false;
@@ -697,7 +850,7 @@ class So_AccessToken {
 	}
 	
 	function requireValid($scope) {
-		if (!$this->isValid()) throw new Exception('Token expired');
+		if (!$this->isValid()) throw new So_ExpiredToken('Token expired');
 		if (!$this->gotScopes($scope)) throw new Exception('Token did not include the required scopes.');
 	}
 	
@@ -723,6 +876,9 @@ class So_AccessToken {
 		if (isset($obj['scope'])) $n->scope = $obj['scope'];
 
 		return $n;
+	}
+	function getValue() {
+		return $this->access_token;
 	}
 	function getToken() {
 		$result = array();
@@ -777,14 +933,18 @@ class So_Message {
 		}
 		return join('&', $qs);
 	}
-	
-	public function sendRedirect($endpoint, $hash = false) {
+
+	public function getRedirectURL($endpoint, $hash = false) {
 		if ($hash) {
 			$redirurl = $endpoint . '#' . $this->asQS();
 		} else {
 			$redirurl = $endpoint . '?' . $this->asQS();
 		}
-		
+		return $redirurl;
+	}
+	
+	public function sendRedirect($endpoint, $hash = false) {
+		$redirurl = $this->getRedirectURL($endpoint, $hash);		
 		header('Location: ' . $redirurl);
 		exit;
 	}
@@ -831,6 +991,8 @@ abstract class So_AuthenticatedRequest extends So_Request {
 	protected $client_secret;
 	function __construct($message) {
 		parent::__construct($message);
+		$this->client_id		= So_Utils::optional($message, 'client_id');
+		$this->client_secret		= So_Utils::optional($message, 'client_secret');
 	}
 	function setClientCredentials($u, $p) {
 		error_log('setClientCredentials ('  . $u. ',' . $p. ')');
@@ -933,7 +1095,7 @@ class So_AuthRequest extends So_Request {
 		$this->response_type	= So_Utils::prequire($message, 'response_type', array('code', 'token'), true);		
 		$this->client_id 		= So_Utils::prequire($message, 'client_id');
 		$this->redirect_uri		= So_Utils::optional($message, 'redirect_uri');
-		$this->scope			= So_Utils::optional($message, 'scope');
+		$this->scope			= So_Utils::spacelist(So_Utils::optional($message, 'scope'));
 		$this->state			= So_Utils::optional($message, 'state');
 	}
 	
@@ -1025,7 +1187,10 @@ class So_AuthResponse extends So_Message {
 class So_Utils {
 	
 	
-	
+	static function spacelist($arg) {
+		if ($arg === null) return null;
+		return explode(' ', $arg);
+	}
 	
 	static function geturl() {
 		$url = ((!empty($_SERVER['HTTPS'])) ? 
