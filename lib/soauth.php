@@ -292,15 +292,20 @@ class So_Client {
 		
 		So_log::debug('Got an Authorization Response', array('params' => $_REQUEST));
 		
-		$tokenrequest = $authresponse->getTokenRequest(array(
-			'redirect_uri' => $providerconfig['client_credentials']['redirect_uri'],
-		));
+		$opts = array();
+		if (isset($providerconfig['client_credentials']['redirect_uri'])) {
+			$opts['redirect_uri'] = $providerconfig['client_credentials']['redirect_uri'];
+		}
+		$tokenrequest = $authresponse->getTokenRequest($opts);
 		$tokenrequest->setClientCredentials($providerconfig['client_credentials']['client_id'], $providerconfig['client_credentials']['client_secret']);
 		
 		$tokenresponseraw = $tokenrequest->post($providerconfig['token']);
 //		echo '<pre>'; print_r($tokenresponseraw); 
 
-		echo '<pre>Token response:'; print_r($tokenresponseraw); echo '</pre>';
+		// echo '<pre>Config';
+		// print_r($providerconfig);
+		// echo 'request:'; print_r($tokenrequest);
+		// echo 'Token response:'; print_r($tokenresponseraw); echo '</pre>'; exit;
 		
 		$tokenresponse = new So_TokenResponse($tokenresponseraw);
 		
@@ -741,7 +746,9 @@ class So_AccessToken {
 }
 
 
-
+class So_InvalidResponse extends So_Exception {
+	public $raw;
+}
 
 class So_Exception extends Exception {
 	protected $code, $state;
@@ -871,7 +878,14 @@ abstract class So_AuthenticatedRequest extends So_Request {
 	
 	public function post($endpoint) {
 		
+
+
 		$postdata = $this->asQS();		
+		error_log('Posting typically a token request: ' .var_export(array(
+		 		'endpoint' => $endpoint,
+				'header' => $this->getAuthorizationHeader(),
+				'body' => $postdata,
+		 	), true));
 		So_log::debug('Posting typically a token request: ',
 		 	array(
 		 		'endpoint' => $endpoint,
@@ -890,6 +904,7 @@ abstract class So_AuthenticatedRequest extends So_Request {
 		);
 		$context  = @stream_context_create($opts);
 
+		error_log("Posting to ednpoint: " . $endpoint);
 		$result = @file_get_contents($endpoint, false, $context);
 		$statuscode = $this->getStatusCode($http_response_header);
 		
@@ -908,7 +923,14 @@ abstract class So_AuthenticatedRequest extends So_Request {
 		
 		if ($ct === 'application/json') {
 
+			error_log('RESPONSE WAS: '. var_export($result, true));
+
 			$resultobj = json_decode($result, true);
+			if ($resultobj === null) {
+				$e = new So_InvalidResponse('na', 'Statuscode 200, but content was invalid JSON, on Token endpoint.');
+				$e->raw = $result;
+				throw $e;
+			}
 			
 		} else if ($ct === 'application/x-www-form-urlencoded') {
 			
@@ -919,6 +941,7 @@ abstract class So_AuthenticatedRequest extends So_Request {
 			// cannot be reached, right now.
 			throw new Exception('Invalid content type in Token response.');
 		}
+		error_log("Done. Output was: " . $result );
 		So_log::debug('Successfully parsed the Token Response body',array('response' => $resultobj));
 		return $resultobj;
 	}
