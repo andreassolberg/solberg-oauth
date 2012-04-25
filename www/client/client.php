@@ -12,7 +12,7 @@ require_once('../../lib/soauth.php');
 try {
 	$client = new So_Client();
 	
-	$token = $client->getToken('test1', 'andreas');
+	$token = $client->getToken('proxydemo', 'andreas');
 	
 	// echo '<pre>Token from (test1, andreas):';
 	// print_r($token);
@@ -20,8 +20,8 @@ try {
 	// exit;
 	
 	
-	
-	$data = $client->getHTTP('test1', 'andreas', null, 'http://bridge.uninett.no/solberg-oauth/www/server/protected.php');
+	// getHTTP($provider_id, $user_id, $url, array $requestScope = null, array $requireScope = null) {
+	$data = $client->getHTTP('proxydemo', 'andreas', 'http://proxydemo.app.bridge.uninett.no/api/rest.php', array("openid"));
 	
 	echo '<p>Got data: <pre>';
 	print_r(json_decode($data, true));
