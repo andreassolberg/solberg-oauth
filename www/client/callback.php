@@ -10,7 +10,7 @@ require_once('../../lib/soauth.php');
 
 try {
 	$client = new So_Client();
-	$client->callback('coip', 'andreas');
+	$client->callback('proxydemo', 'andreas');
 
 
 } catch(Exception $e) {
