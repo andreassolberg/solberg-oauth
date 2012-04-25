@@ -14,14 +14,14 @@ try {
 	
 	$token = $client->getToken('proxydemo', 'andreas');
 	
-	echo '<pre>Token from (test1, andreas):';
-	print_r($token);
-	echo '</pre>';
+	// echo '<pre>Token from (test1, andreas):';
+	// print_r($token);
+	// echo '</pre>';
 	// exit;
 	
-	
-	
-	$data = $client->getHTTP('proxydemo', 'andreas', null, 'http://proxydemo.app.bridge.uninett.no/api/rest.php');
+	// getHTTP($provider_id, $user_id, $url, array $requestScope = null, array $requireScope = null) {
+	$data = $client->getHTTP('proxydemo', 'andreas', 'http://proxydemo.app.bridge.uninett.no/api/rest.php', array("openid"));
+
 	
 	echo '<p>Got data: <pre>';
 	print_r(json_decode($data, true));
