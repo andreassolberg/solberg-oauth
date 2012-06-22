@@ -37,7 +37,7 @@ class So_ExpiredToken extends Exception {}
 class So_AuthorizationRequied extends Exception {
 	public $scopes;
 }
-
+class So_InsufficientScope extends Exception {}
 
 /*
  * Log to MongoDB 
@@ -63,7 +63,7 @@ class So_log {
 		}
 	}
 	private static function log($level, $message, $obj = array()) {
-		return;
+
 		if ($level > self::$logLevel) continue;
 		if (empty(self::$db)) self::init();
 		
@@ -75,6 +75,9 @@ class So_log {
 			$obj['_location'] = $debug[2]['function'] . ' (line ' . $debug[2]['line'] . ')';
 			// $obj['_stacktrace'] = $debug; Generates a lot of data...	
 		}
+
+		error_log('solberg-oauth logger: ' . json_encode($obj));
+		return;
 		
 		self::$db->log->insert($obj);
 	}
@@ -282,6 +285,7 @@ class So_Client {
 	}
 
 	function wipeToken($provider_id, $token) {
+		So_log::debug('Wiping token!', array('args' => func_get_args()));
 		$this->store->wipeToken($provider_id, $token);
 	}
 	
@@ -307,7 +311,7 @@ class So_Client {
 		
 		So_log::debug('Found a matching access token to use', array('token' => $token));
 		
-		error_log('Header: ' . $token->getAuthorizationHeader());
+		// error_log('Header: ' . $token->getAuthorizationHeader());
 		$httpopts = array(
 	        'method'  => 'GET',
 	        'header'  => $token->getAuthorizationHeader()
@@ -327,14 +331,16 @@ class So_Client {
 		error_log("   Using header:  " . $token->getAuthorizationHeader());
 		$result = @file_get_contents($url, false, $context);
 
-		// echo '<pre>';
+
 
 		if ($result === false) {
 			list($version, $status_code, $msg) = explode(' ', $http_response_header[0], 3);
 			$headers = array();
-
 			foreach($http_response_header AS $hdr) {
 				http_parse_headers($hdr, &$headers);
+			}
+			if ($status_code !== 200) {
+				So_log::debug('Status code was (not 200)', array('status' => $status_code, 'msg' => $msg, 'Headers' => $headers));
 			}
 			if ($status_code === '400') {
 				if (isset($headers["www-authenticate"])) {
@@ -346,9 +352,18 @@ class So_Client {
 
 						// Facebook 
 						throw new So_ExpiredToken("Access Token seems to be expired [facebook].");
+
+					} else if (strpos($headers["www-authenticate"][0],
+						'OAuth "Facebook Platform" "invalid_request"'
+						) !== false) {
+
+						$this->wipeToken($provider_id, $token);
+
+						// Facebook 
+						throw new So_ExpiredToken("Access Token seems to be expired [facebook].");
 					}
 				}
-			} else if ($status_code === 401) {
+			} else if ($status_code === '401') {
 				if (isset($headers["www-authenticate"])) {
 					if (strpos($headers["www-authenticate"][0],
 						'"invalid_token"'
@@ -360,13 +375,20 @@ class So_Client {
 						throw new So_ExpiredToken("Access Token seems to be expired.");
 					}
 				}
+			} else if ($status_code === '403') {
+				$msg = '403. Insufficient scope?';
+				if (isset($headers["www-authenticate"])) {
+					$msg = $headers["www-authenticate"][0];
+				}
+				throw new So_InsufficientScope($msg);
 			}
 			// print_r($http_response_header); 
 			// print_r($headers); 
 			// echo "status_code: " . $status_code;
 			// exit;
 
-			throw new Exception('Error (not 200 OK) when accessing data endpoint.');
+
+			throw new Exception('Error (' . $status_code . ') when accessing data endpoint.');
 		}
 
 
@@ -386,35 +408,30 @@ class So_Client {
 		
 		$authresponse = new So_AuthResponse($_REQUEST);
 
-
-
-
 		$stateobj = $this->store->getState($authresponse->state);
-		
-
 		$provider_id = $stateobj["provider_id"];
+
+
+
 
 		if (empty($provider_id)) throw new Exception("could not find provider_id in state array. Internal error. should not happen.");
 
 		$providerconfig = $this->store->getProviderConfig($provider_id);
 
-		//echo '<pre>'; print_r($stateobj); exit;
-		
 
-		
+
 		So_log::debug('Got an Authorization Response', array('params' => $_REQUEST));
 		
 		$opts = array();
-		if (isset($providerconfig['client_credentials']['redirect_uri'])) {
-			$opts['redirect_uri'] = $providerconfig['client_credentials']['redirect_uri'];
+		if (isset($providerconfig['redirect_uri'])) {
+			$opts['redirect_uri'] = $providerconfig['redirect_uri'];
 		}
 		$tokenrequest = $authresponse->getTokenRequest($opts);
-		$tokenrequest->setClientCredentials($providerconfig['client_credentials']['client_id'], $providerconfig['client_credentials']['client_secret']);
+		$tokenrequest->setClientCredentials($providerconfig['client_id'], $providerconfig['client_secret']);
 		
 		$tokenresponseraw = $tokenrequest->post($providerconfig['token']);
 //		echo '<pre>'; print_r($tokenresponseraw); 
 		
-
 		
 		$tokenresponse = new So_TokenResponse($tokenresponseraw);
 		
@@ -422,6 +439,36 @@ class So_Client {
 
 		$accesstoken = So_AccessToken::fromObj($tokenresponseraw);
 //		echo '<pre>'; print_r($accesstoken); 
+
+		if (empty($accesstoken->scope)) {
+			if (!empty($stateobj['requestedScopes'])) {
+				$accesstoken->scope = $stateobj['requestedScopes'];
+			}
+		}
+
+		if (empty($accesstoken->client_id)) {
+			if (!empty($stateobj['client_id'])) {
+				$accesstoken->client_id = $stateobj['client_id'];
+			}
+		}
+
+		if (empty($accesstoken->validuntil)) {
+			if (!empty($providerconfig['defaultexpire'])) {
+				$accesstoken->validuntil = time() + $providerconfig['defaultexpire'];
+			}
+		}
+		if (empty($accesstoken->issued)) {
+			$accesstoken->issued = time();
+		}
+
+		// echo '<pre>'; 
+		// echo 'state object';
+		// print_r($stateobj); 
+		// echo 'provider config';
+		// print_r($providerconfig);
+		// echo 'tokenresponse';
+		// print_r($accesstoken);
+		// exit;
 		
 		$this->store->putAccessToken($provider_id, $userid, $accesstoken);
 		
@@ -442,19 +489,21 @@ class So_Client {
 		$state = So_Utils::gen_uuid();
 		$stateobj = array(
 			'redirect_uri' => $returnTo,
-			'provider_id' => $providerID
+			'provider_id' => $providerID,
+			'requestedScopes' => $scope,
+			'client_id' => $providerconfig['client_id'],
 		);
+		error_log("Storing a new state object: " . $state . "  " . json_encode($stateobj));
 		$this->store->putState($state, $stateobj);
 
 		$requestdata = array(
 			'response_type' => 'code',
-			'client_id' => $providerconfig['client_credentials']['client_id'],
+			'client_id' => $providerconfig['client_id'],
 			'state' => $state,
-			'redirect_uri' => $providerconfig['client_credentials']['redirect_uri'],
+			'redirect_uri' => $providerconfig['redirect_uri'],
 		);
+		if (!empty($scope)) $requestdata['scope'] = join(' ', $scope);
 
-		
-		if (!empty($scope)) $requestdata['scope'] = $scope;
 		$request = new So_AuthRequest($requestdata);
 		So_log::debug('Redirecting to ', $providerconfig['authorization']);
 		
@@ -515,6 +564,9 @@ class So_Server {
 	
 	private function getAuthorizationHeader() {
 		$hdrs = getallheaders();
+
+
+
 		foreach($hdrs AS $h => $v) {
 			if ($h === 'Authorization') {
 				if (preg_match('/^Bearer\s(.*?)$/i', $v, $matches)) {
@@ -522,12 +574,14 @@ class So_Server {
 				}
 			}
 		}
+
 		return null;
 	}
 	
 	
 	private function getProvidedToken() {
 		$authorizationHeader = $this->getAuthorizationHeader();
+		// echo '<pre>'; print_r($authorizationHeader); exit;
 		if ($authorizationHeader !== null) return $authorizationHeader;
 		
 		if (!empty($_REQUEST['access_token'])) return $_REQUEST['access_token'];
